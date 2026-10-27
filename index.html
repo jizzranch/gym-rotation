@@ -42,8 +42,7 @@ header{position:sticky;top:env(safe-area-inset-top,0px);background:var(--bg);pad
 h1{font-family:var(--display);font-weight:700;font-size:40px;line-height:1;margin:4px 0 0;letter-spacing:.01em;text-wrap:balance}
 .today{margin-top:8px;color:var(--muted);font-size:15px}
 .today b{color:var(--ink);font-weight:600}
-.section-label{display:flex;justify-content:space-between;align-items:baseline;margin:14px 2px 8px}
-.section-label span:last-child{font-size:13px;color:var(--muted)}
+.home-head{padding-block:18px 14px}
 ol{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:10px}
 li{background:var(--surface);border:1px solid var(--line);border-radius:14px;display:grid;grid-template-columns:52px 1fr auto;gap:14px;align-items:center;padding:12px 12px 12px 12px;position:relative}
 li.up-next{border-color:var(--accent)}
@@ -141,12 +140,9 @@ input:focus-visible,select:focus-visible,textarea:focus-visible,.iconbtn:focus-v
 
 <div class="wrap">
   <section id="view-home">
-    <header>
-      <div class="eyebrow" id="dateLine">Today</div>
-      <h1>Up next: <span id="nextName">Chest</span></h1>
-      <div class="today" id="todayLine">Nothing logged today yet.</div>
+    <header class="home-head">
+      <h1 id="dateLine">Today</h1>
     </header>
-    <div class="section-label eyebrow"><span>Rotation</span><span>Tap the circle when you finish</span></div>
     <ol id="list"></ol>
     <div class="legend">
       <span><i class="dot fresh"></i>0 to 3 days</span>
@@ -288,10 +284,6 @@ function render(){
     }
   }
   document.getElementById("dateLine").textContent = new Date(now).toLocaleDateString(undefined, {weekday:"long", day:"numeric", month:"long"});
-  const nextUp = rows.find(w => !(w.last && daysBetween(w.last, now) === 0));
-  document.getElementById("nextName").textContent = nextUp ? nextUp.name : "Rest day";
-  const todays = rows.filter(w => w.last && daysBetween(w.last, now) === 0).map(w => w.name);
-  document.getElementById("todayLine").innerHTML = todays.length ? `Logged today: <b>${todays.map(esc).join(", ")}</b>` : "Nothing logged today yet.";
 }
 function esc(s){ return String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
 
