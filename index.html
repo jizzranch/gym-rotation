@@ -132,6 +132,31 @@ input:focus-visible,select:focus-visible,textarea:focus-visible,.iconbtn:focus-v
 .x{background:none;border:0;color:var(--muted);font-size:20px;width:36px;height:36px;border-radius:8px;cursor:pointer}
 .x:focus-visible{outline:2px solid var(--accent)}
 .note{font-size:14px;color:var(--fresh);min-height:1em}
+/* Sub-workouts */
+.info.has-subs{cursor:pointer}
+.progress{font-weight:600;color:var(--accent);display:inline-flex;align-items:center;gap:2px}
+.progress svg{width:14px;height:14px;transition:transform .2s}
+li.open .progress svg{transform:rotate(180deg)}
+.subs{grid-column:1/-1;list-style:none;margin:0;padding:4px 0 0;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:0}
+.subs li{background:none;border:0;border-radius:0;padding:8px 0 8px 4px;grid-template-columns:1fr auto;gap:12px}
+.subs li + li{border-top:1px solid var(--line)}
+.sname{font-weight:600;font-size:16px}
+.sreps{font-size:14px;color:var(--muted);font-variant-numeric:tabular-nums}
+.subs li.ticked .sname{color:var(--muted);text-decoration:line-through}
+.stick{width:40px;height:40px;border-radius:50%;border:2px solid var(--line);background:transparent;display:grid;place-items:center;cursor:pointer;color:var(--muted);transition:transform .15s,background .2s,border-color .2s}
+.stick svg{width:20px;height:20px}
+.stick:active{transform:scale(.92)}
+.stick:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.subs li.ticked .stick{background:var(--fresh);border-color:var(--fresh);color:#fff}
+.subed{grid-column:1/-1;display:flex;flex-direction:column;gap:8px;background:var(--bg);border-radius:10px;padding:10px}
+.srow{display:grid;grid-template-columns:minmax(0,1fr) 88px 36px;gap:6px;align-items:center}
+.srow input{padding:8px 10px;font-size:15px}
+.switch{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:15px;cursor:pointer}
+.switch input{appearance:none;-webkit-appearance:none;flex:none;width:51px;height:31px;border-radius:999px;background:var(--line);position:relative;cursor:pointer;transition:background .2s;margin:0}
+.switch input::after{content:"";position:absolute;top:2px;left:2px;width:27px;height:27px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.3);transition:transform .2s}
+.switch input:checked{background:var(--fresh)}
+.switch input:checked::after{transform:translateX(20px)}
+.switch input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 @media (prefers-reduced-motion: reduce){*{transition:none!important;animation:none!important}}
 </style>
 </head>
@@ -167,7 +192,15 @@ input:focus-visible,select:focus-visible,textarea:focus-visible,.iconbtn:focus-v
     <div class="group">
       <div class="eyebrow">In your rotation</div>
       <div class="card" id="wList"></div>
-      <p class="hint">Tap a symbol to change it. Removing a workout hides it from the list but keeps its history.</p>
+      <p class="hint">Tap a symbol to change it. Tap Subs to add sub-workouts, like Bench press, 3×10. Removing a workout hides it from the list but keeps its history.</p>
+    </div>
+
+    <div class="group">
+      <div class="eyebrow">Sub-workouts</div>
+      <div class="card">
+        <label class="switch"><span>Tick the workout off when all its sub-workouts are done</span><input type="checkbox" id="autoToggle"></label>
+        <p class="hint">When this is off, ticking sub-workouts only tracks your progress, and you tick the main workout yourself.</p>
+      </div>
     </div>
 
     <div class="group">
@@ -233,8 +266,19 @@ const DEFAULTS = [
   {id:"cardio", name:"Cardio", icon:"🏃"}
 ];
 // state.logs: [{w: workoutId, t: epoch ms}] — every tick is kept for the Analysis tab
+// state.subLogs: [{w, s: subId, t}] — sub-workout ticks. workout.subs: [{id, name, reps}]
 let state = {workouts: DEFAULTS.slice(), logs: []};
 try { const s = JSON.parse(localStorage.getItem(KEY)); if (s && Array.isArray(s.workouts)) state = s; } catch(e) {}
+// Fill in fields added after the first version, so older saved data and backups keep working
+function upgrade(s){
+  if (!Array.isArray(s.logs)) s.logs = [];
+  if (!Array.isArray(s.subLogs)) s.subLogs = [];
+  if (!s.settings || typeof s.settings !== "object") s.settings = {};
+  if (typeof s.settings.autoComplete !== "boolean") s.settings.autoComplete = true;
+  for (const w of s.workouts) if (!Array.isArray(w.subs)) w.subs = [];
+  return s;
+}
+upgrade(state);
 function save(){ try { localStorage.setItem(KEY, JSON.stringify(state)); } catch(e) {} }
 
 const DAY = 86400000;
@@ -257,7 +301,7 @@ let justId = null;
 function render(){
   const now = Date.now();
   const rows = ordered();
-  const prev = new Map([...listEl.children].map(li => [li.dataset.id, li.getBoundingClientRect().top]));
+  const prev = new Map([...listEl.querySelectorAll(":scope > li")].map(li => [li.dataset.id, li.getBoundingClientRect().top]));
   listEl.innerHTML = rows.map((w, idx) => {
     let meta, cls = "";
     if (!w.last) meta = `<i class="dot"></i><span>Not logged yet</span>`;
@@ -268,16 +312,26 @@ function render(){
       meta = `<i class="dot ${cls}"></i><span class="since">${since}</span><span>· ${fmtDate(w.last)}${d === 0 ? " at " + fmtTime(w.last) : ""}</span>`;
     }
     const doneToday = w.last && daysBetween(w.last, now) === 0;
+    const subs = w.subs || [], hasSubs = subs.length > 0, open = hasSubs && openSubs.has(w.id);
+    let subsHtml = "";
+    if (hasSubs) {
+      const doneN = subs.filter(s => subDoneToday(w.id, s.id)).length;
+      meta += `<span class="progress">· ${doneN}/${subs.length} subs<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></span>`;
+      if (open) subsHtml = `<ul class="subs">${subs.map(s => { const on = subDoneToday(w.id, s.id); return `<li data-sub="${s.id}" class="${on ? "ticked" : ""}">
+        <div><div class="sname">${esc(s.name)}</div>${s.reps ? `<div class="sreps">${esc(s.reps)}</div>` : ""}</div>
+        <button class="stick" type="button" aria-pressed="${on}" aria-label="${on ? "Untick" : "Tick off"} ${esc(s.name)}">${tickSvg}</button></li>`; }).join("")}</ul>`;
+    }
     const chip = idx === 0 && !doneToday ? '<span class="chip">Up next</span>' : doneToday ? '<span class="chip done">Done today</span>' : "";
-    return `<li data-id="${w.id}" class="${idx === 0 && !doneToday ? "up-next" : ""} ${w.id === justId ? "just" : ""}">
+    return `<li data-id="${w.id}" class="${idx === 0 && !doneToday ? "up-next" : ""} ${w.id === justId ? "just" : ""} ${open ? "open" : ""}">
       <div class="icon" aria-hidden="true">${w.icon}</div>
-      <div class="info"><div class="name">${esc(w.name)} ${chip}</div><div class="meta">${meta}</div></div>
+      <div class="info${hasSubs ? " has-subs" : ""}"${hasSubs ? ` role="button" tabindex="0" aria-expanded="${open}" aria-label="${open ? "Hide" : "Show"} sub-workouts for ${esc(w.name)}"` : ""}><div class="name">${esc(w.name)} ${chip}</div><div class="meta">${meta}</div></div>
       <button class="tick" type="button" aria-label="Log ${esc(w.name)} as done">${tickSvg}</button>
+      ${subsHtml}
     </li>`;
   }).join("");
   // Slide rows from their old spot to their new one
   if (!matchMedia("(prefers-reduced-motion: reduce)").matches) {
-    for (const li of listEl.children) {
+    for (const li of listEl.querySelectorAll(":scope > li")) {
       const old = prev.get(li.dataset.id); if (old == null) continue;
       const dy = old - li.getBoundingClientRect().top;
       if (dy) li.animate([{transform:`translateY(${dy}px)`},{transform:"none"}], {duration:380, easing:"cubic-bezier(.2,.8,.2,1)"});
@@ -288,18 +342,45 @@ function render(){
 function esc(s){ return String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
 
 let toastTimer, lastLog = null;
-listEl.addEventListener("click", e => {
-  const btn = e.target.closest(".tick"); if (!btn) return;
-  const id = btn.closest("li").dataset.id;
+const openSubs = new Set();
+const subDoneToday = (wid, sid) => state.subLogs.some(l => l.w === wid && l.s === sid && daysBetween(l.t, Date.now()) === 0);
+const doneToday = wid => state.logs.some(l => l.w === wid && daysBetween(l.t, Date.now()) === 0);
+
+function logWorkout(id, li, auto){
   lastLog = {w:id, t:Date.now()};
+  if (auto) lastLog.auto = true;
   state.logs.push(lastLog); save();
-  btn.closest("li").classList.add("just");
+  li.classList.add("just");
   justId = id;
-  setTimeout(() => { render(); setTimeout(() => { justId = null; render(); }, 900); }, 260);
+  setTimeout(() => { if (auto) openSubs.delete(id); render(); setTimeout(() => { justId = null; render(); }, 900); }, 260);
   const w = state.workouts.find(x => x.id === id);
-  document.getElementById("toastMsg").textContent = `${w.name} logged`;
+  document.getElementById("toastMsg").textContent = auto ? `All done. ${w.name} logged` : `${w.name} logged`;
   const t = document.getElementById("toast"); t.hidden = false;
   clearTimeout(toastTimer); toastTimer = setTimeout(() => t.hidden = true, 5000);
+}
+listEl.addEventListener("click", e => {
+  const top = e.target.closest("li[data-id]"); if (!top) return;
+  const id = top.dataset.id;
+  const stick = e.target.closest(".stick");
+  if (stick) {
+    const sid = stick.closest("li").dataset.sub, w = state.workouts.find(x => x.id === id);
+    if (subDoneToday(id, sid)) {
+      // Untick: drop today's tick, and undo an automatic log of the parent from today
+      state.subLogs = state.subLogs.filter(l => !(l.w === id && l.s === sid && daysBetween(l.t, Date.now()) === 0));
+      state.logs = state.logs.filter(l => !(l.w === id && l.auto && daysBetween(l.t, Date.now()) === 0));
+      save(); render(); return;
+    }
+    state.subLogs.push({w:id, s:sid, t:Date.now()}); save();
+    const allDone = w.subs.every(s => subDoneToday(id, s.id));
+    if (allDone && state.settings.autoComplete && !doneToday(id)) { render(); logWorkout(id, listEl.querySelector(`li[data-id="${id}"]`), true); }
+    else render();
+    return;
+  }
+  if (e.target.closest(".tick")) { logWorkout(id, top, false); return; }
+  if (e.target.closest(".info.has-subs")) { openSubs.has(id) ? openSubs.delete(id) : openSubs.add(id); render(); }
+});
+listEl.addEventListener("keydown", e => {
+  if ((e.key === "Enter" || e.key === " ") && e.target.matches(".info.has-subs")) { e.preventDefault(); e.target.click(); }
 });
 document.getElementById("undoBtn").addEventListener("click", () => {
   if (lastLog) { state.logs = state.logs.filter(l => l !== lastLog); lastLog = null; save(); justId = null; render(); }
@@ -450,7 +531,7 @@ addEventListener("scroll", () => tip.hidden = true, {passive: true});
 /* ---------- Settings ---------- */
 const ICONS = ["🏋️","💪","🔥","🦵","🤸","🏃","🚴","🏊","🧘","🥊","🧗","🚣","⛹️","🤾","🦾","🍑","❤️","⚡","🎯","🏆","⏱️","🦍","🐢","🧱"];
 const flash = (id, msg) => { const n = $(id); n.textContent = msg; clearTimeout(n._t); n._t = setTimeout(() => n.textContent = "", 3000); };
-let openPicker = null, confirmId = null;
+let openPicker = null, confirmId = null, openEditor = null;
 
 function pickerHtml(current){ return ICONS.map(i => `<button type="button" data-icon="${i}" aria-pressed="${i === current}">${i}</button>`).join(""); }
 
@@ -460,10 +541,16 @@ function renderSettings(){
     <div class="wrow" data-id="${w.id}">
       <button type="button" class="iconbtn" data-act="icon" aria-label="Change symbol for ${esc(w.name)}">${w.icon}</button>
       <input type="text" value="${esc(w.name)}" maxlength="24" data-act="rename" aria-label="Name">
-      <button type="button" class="btn small danger" data-act="ask">Remove</button>
+      <div class="row" style="flex-wrap:nowrap;gap:6px"><button type="button" class="btn small" data-act="subs" aria-expanded="${openEditor === w.id}">Subs${w.subs.length ? " (" + w.subs.length + ")" : ""}</button><button type="button" class="btn small danger" data-act="ask">Remove</button></div>
+      ${openEditor === w.id ? `<div class="subed">
+        ${w.subs.map(s => `<div class="srow" data-sub="${s.id}"><input type="text" value="${esc(s.name)}" maxlength="32" data-act="sname" aria-label="Sub-workout name"><input type="text" value="${esc(s.reps || "")}" maxlength="16" data-act="sreps" placeholder="Reps" aria-label="Reps"><button type="button" class="x" data-act="sdel" aria-label="Remove ${esc(s.name)}">×</button></div>`).join("") || '<p class="hint">No sub-workouts yet.</p>'}
+        <div class="srow"><input type="text" maxlength="32" data-new="name" placeholder="e.g. Bench press" aria-label="New sub-workout name"><input type="text" maxlength="16" data-new="reps" placeholder="3×10" aria-label="Reps"><span></span></div>
+        <div class="row"><button type="button" class="btn small primary" data-act="sadd">Add sub-workout</button><span class="note" id="subNote"></span></div>
+      </div>` : ""}
       ${confirmId === w.id ? `<div class="confirm">Remove ${esc(w.name)}? Its history stays. <button type="button" class="btn small danger" data-act="remove">Remove</button><button type="button" class="btn small" data-act="cancel">Keep</button></div>` : ""}
       ${openPicker === w.id ? `<div class="picker" style="grid-column:1/-1">${pickerHtml(w.icon)}</div>` : ""}
     </div>`).join("") : '<p class="hint">No workouts yet. Add one below.</p>';
+  $("autoToggle").checked = state.settings.autoComplete;
   $("removedGroup").hidden = !removed.length;
   $("rList").innerHTML = removed.map(w => `<div class="wrow" data-id="${w.id}" style="grid-template-columns:48px 1fr auto"><div class="icon" style="width:48px;height:48px">${w.icon}</div><span>${esc(w.name)}</span><button type="button" class="btn small" data-act="restore">Bring back</button></div>`).join("");
   $("pastW").innerHTML = active.map(w => `<option value="${w.id}">${w.icon} ${esc(w.name)}</option>`).join("");
@@ -488,10 +575,32 @@ $("wList").addEventListener("click", e => {
   else if (act === "ask") { confirmId = w.id; openPicker = null; renderSettings(); }
   else if (act === "cancel") { confirmId = null; renderSettings(); }
   else if (act === "remove") { w.hidden = true; confirmId = null; save(); renderSettings(); }
+  else if (act === "subs") { openEditor = openEditor === w.id ? null : w.id; openPicker = null; confirmId = null; renderSettings(); }
+  else if (act === "sdel") { const sid = e.target.closest(".srow").dataset.sub; w.subs = w.subs.filter(s => s.id !== sid); save(); renderSettings(); }
+  else if (act === "sadd") {
+    const n = row.querySelector('[data-new="name"]'), r = row.querySelector('[data-new="reps"]');
+    const name = n.value.trim();
+    if (!name) { flash("subNote", "Type a name first."); n.focus(); return; }
+    w.subs.push({id: "s" + Date.now().toString(36), name, reps: r.value.trim()});
+    save(); renderSettings(); flash("subNote", `${name} added.`);
+    $("wList").querySelector(`.wrow[data-id="${w.id}"] [data-new="name"]`).focus();
+  }
 });
+$("wList").addEventListener("keydown", e => {
+  if (e.key === "Enter" && e.target.dataset.new) { e.preventDefault(); e.target.closest(".wrow").querySelector('[data-act="sadd"]').click(); }
+});
+$("autoToggle").addEventListener("change", e => { state.settings.autoComplete = e.target.checked; save(); });
 $("wList").addEventListener("change", e => {
-  if (e.target.dataset.act !== "rename") return;
-  const w = state.workouts.find(x => x.id === e.target.closest(".wrow").dataset.id);
+  const w = state.workouts.find(x => x.id === e.target.closest(".wrow")?.dataset.id); if (!w) return;
+  const act = e.target.dataset.act;
+  if (act === "sname" || act === "sreps") {
+    const s = w.subs.find(x => x.id === e.target.closest(".srow").dataset.sub);
+    const v = e.target.value.trim();
+    if (act === "sreps") { s.reps = v; save(); }
+    else if (v) { s.name = v; save(); } else e.target.value = s.name;
+    return;
+  }
+  if (act !== "rename") return;
   const v = e.target.value.trim(); if (v) { w.name = v; save(); } else e.target.value = w.name;
 });
 $("rList").addEventListener("click", e => {
@@ -508,7 +617,7 @@ $("newPicker").addEventListener("click", e => {
 $("addBtn").addEventListener("click", () => {
   const name = $("newName").value.trim();
   if (!name) { flash("addNote", "Type a name first."); $("newName").focus(); return; }
-  state.workouts.push({id: "w" + Date.now().toString(36), name, icon: newIcon});
+  state.workouts.push({id: "w" + Date.now().toString(36), name, icon: newIcon, subs: []});
   save(); $("newName").value = ""; newIcon = "🎯"; $("newIcon").textContent = newIcon; $("newPicker").hidden = true;
   renderSettings(); flash("addNote", `${name} added to your rotation.`);
 });
@@ -538,7 +647,7 @@ $("restoreBtn").addEventListener("click", () => {
   let s; try { s = JSON.parse($("restoreText").value); } catch(e) {}
   if (!s || !Array.isArray(s.workouts) || !Array.isArray(s.logs)) { flash("restoreNote", "That doesn't look like a backup. Paste the whole thing."); return; }
   if (!restoreArmed) { restoreArmed = true; $("restoreBtn").textContent = "Tap again to replace everything"; $("restoreBtn").classList.add("danger"); return; }
-  state = s; save(); restoreArmed = false; $("restoreBtn").textContent = "Restore from backup"; $("restoreBtn").classList.remove("danger");
+  state = upgrade(s); save(); restoreArmed = false; $("restoreBtn").textContent = "Restore from backup"; $("restoreBtn").classList.remove("danger");
   $("restoreText").value = ""; renderSettings(); flash("restoreNote", `Restored ${s.logs.length} sessions.`);
 });
 
